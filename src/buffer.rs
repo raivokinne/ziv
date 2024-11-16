@@ -18,6 +18,18 @@ impl Buffer {
         self.lines.len()
     }
 
+    pub fn get_line(&self, idx: usize) -> &str {
+        &self.lines[idx]
+    }
+
+    pub fn insert_char(&mut self, cx: usize, cy: usize, c: char) {
+        self.lines[cy].insert(cx, c);
+    }
+
+    pub fn remove_char(&mut self, cx: usize, cy: usize) {
+        self.lines[cy].remove(cx);
+    }
+
     pub fn from_file(file: Option<String>) -> anyhow::Result<Self> {
         match &file {
             Some(file) => {

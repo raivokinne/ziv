@@ -1,18 +1,15 @@
-use std::io::{stdout, Write};
-
+use crate::buffer::Buffer;
 use crossterm::{
     cursor,
     event::{self, read},
     style::{self, Color, Stylize},
     terminal, ExecutableCommand, QueueableCommand,
 };
-
-use syntect::{easy::HighlightLines, highlighting::Theme};
+use std::{io::{stdout, Write}, thread::sleep, time::Duration};
 use syntect::highlighting::{Style, ThemeSet};
-use syntect::parsing::{SyntaxSet, SyntaxReference};
+use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
-
-use crate::buffer::Buffer;
+use syntect::{easy::HighlightLines, highlighting::Theme};
 
 enum Action {
     Quit,
@@ -97,7 +94,6 @@ impl Editor {
 
     fn adjust_scroll(&mut self) {
         let visible_lines = self.visible_lines();
-
         let max_cy = (self.buffers[self.active_buffer].len() as u16).saturating_sub(1);
         self.cy = self.cy.min(max_cy);
 
@@ -109,21 +105,20 @@ impl Editor {
             self.scroll_offset = self.cy.saturating_sub(visible_lines).saturating_add(1);
         }
 
-        let max_scroll = (self.buffers[self.active_buffer].len() as u16)
-            .saturating_sub(visible_lines);
+        let max_scroll =
+            (self.buffers[self.active_buffer].len() as u16).saturating_sub(visible_lines);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     pub fn draw(&mut self) -> anyhow::Result<()> {
         self.adjust_scroll();
 
-        self.stdout
-            .queue(terminal::Clear(terminal::ClearType::All))?;
+        self.stdout.queue(terminal::Clear(terminal::ClearType::All))?;
         self.draw_buffer()?;
         self.draw_statusline()?;
 
         let (screen_x, screen_y) = self.get_screen_position();
-        self.stdout.queue(cursor::MoveTo(screen_x, screen_y))?;
+        self.stdout.queue(cursor::MoveTo(screen_x + 4, screen_y))?;
         self.stdout.flush()?;
 
         Ok(())
@@ -145,13 +140,17 @@ impl Editor {
             if i as u16 >= self.visible_lines() {
                 break;
             }
-            self.stdout.queue(cursor::MoveTo(0, i as u16))?;
 
             let regions: Vec<(Style, &str)> = highlighter.highlight_line(line, &self.syntax_set)?;
             let highlighted_line = as_24_bit_terminal_escaped(&regions, false);
 
+            self.stdout.queue(cursor::MoveTo(0, i as u16))?;
+            self.stdout.queue(style::Print(format!("{} ", i).with(Color::White)))?;
+            self.stdout.queue(cursor::MoveTo(4, i as u16))?;
             self.stdout.queue(style::Print(highlighted_line))?;
         }
+
+        self.stdout.queue(cursor::MoveTo(0, self.visible_lines()))?;
 
         Ok(())
     }
@@ -164,7 +163,10 @@ impl Editor {
             .unwrap_or("[No File]");
         let pos = format!(" {}:{} ", self.cx, self.cy);
 
-        let file_width = self.size.0.saturating_sub(mode.len() as u16 + pos.len() as u16 + 2);
+        let file_width = self
+            .size
+            .0
+            .saturating_sub(mode.len() as u16 + pos.len() as u16 + 2);
 
         self.stdout.queue(cursor::MoveTo(0, self.size.1 - 2))?;
         self.stdout
@@ -193,6 +195,7 @@ impl Editor {
     }
 
     pub fn run(&mut self) -> anyhow::Result<()> {
+        sleep(Duration::from_millis(10));
         while !self.exit {
             self.draw()?;
             if let Some(action) = self.handle_event(read()?)? {
@@ -249,74 +252,58 @@ impl Editor {
     }
 
     fn handle_action(&mut self, action: Action) -> anyhow::Result<()> {
-        let buffer = &self.buffers[self.active_buffer];
-        let max_cy = buffer.len().saturating_sub(1) as u16;
+        let buffer = &mut self.buffers[self.active_buffer];
 
         match action {
             Action::Quit => self.exit = true,
             Action::MoveUp => {
-                if self.cy > 0 {
-                    self.cy = self.cy.saturating_sub(1);
-                    if let Some(line) = buffer.lines.get(self.cy as usize) {
-                        self.cx = self.cx.min(line.len() as u16);
-                    }
+                self.cy = self.cy.saturating_sub(1);
+
+                if self.cy >= buffer.len() as u16 {
+                    self.cy = buffer.len() as u16 + 1;
+                }
+
+                let line_len = buffer.get_line(self.cy as usize).len() as u16;
+                self.cx = line_len;
+
+                if line_len == 0 {
+                    self.cx = 0;
+                }
+
+                if self.cy < self.scroll_offset {
+                    self.scroll_offset = self.cy;
                 }
             }
             Action::MoveDown => {
-                if self.cy < max_cy {
-                    self.cy = self.cy.saturating_add(1);
-                    if let Some(line) = buffer.lines.get(self.cy as usize) {
-                        self.cx = self.cx.min(line.len() as u16);
-                    }
+                self.cy = self.cy.saturating_add(1);
+
+                if self.cy >= buffer.len() as u16 {
+                    self.cy = buffer.len() as u16 - 1;
+                }
+
+                let line_len = buffer.get_line(self.cy as usize).len() as u16;
+                self.cx = line_len;
+
+                if line_len == 0 {
+                    self.cx = 0;
+                }
+
+                if self.cy >= self.scroll_offset + self.visible_lines() {
+                    self.scroll_offset = self
+                        .cy
+                        .saturating_sub(self.visible_lines())
+                        .saturating_add(1);
                 }
             }
-            Action::MoveLeft => {
-                if self.cx > 0 {
-                    self.cx = self.cx.saturating_sub(1);
-                }
-            }
+            Action::MoveLeft => self.cx = self.cx.saturating_sub(1),
             Action::MoveRight => {
-                if (self.cy as usize) < buffer.len() {
-                    let line_length = buffer.lines[self.cy as usize].len() as u16;
-                    if self.cx < line_length {
-                        self.cx = self.cx.saturating_add(1);
-                    }
-                }
-            }
-            Action::EnterMode(new_mode) => {
-                self.mode = new_mode;
-            }
-            Action::NextBuffer => {
-                self.active_buffer = (self.active_buffer + 1) % self.buffers.len();
-                self.cx = 0;
-                self.cy = 0;
-                self.scroll_offset = 0;
-            }
-            Action::PreviousBuffer => {
-                self.active_buffer = (self.active_buffer + self.buffers.len() - 1) % self.buffers.len();
-                self.cx = 0;
-                self.cy = 0;
-                self.scroll_offset = 0;
+                self.cx = (self.cx + 1).min(buffer.get_line(self.cy as usize).len() as u16)
             }
             Action::AddChar(c) => {
-                let buffer = &mut self.buffers[self.active_buffer];
-                let line_idx = self.cy as usize;
-
-                if line_idx >= buffer.len() {
-                    buffer.lines.push(String::new());
-                }
-
-                let line = &mut buffer.lines[line_idx];
-                if self.cx as usize > line.len() {
-                    line.push(c);
-                } else {
-                    line.insert(self.cx as usize, c);
-                }
-
-                self.cx = self.cx.saturating_add(1);
+                buffer.insert_char(self.cx as usize, self.cy as usize, c);
+                self.cx += 1;
             }
             Action::NewLine => {
-                let buffer = &mut self.buffers[self.active_buffer];
                 let line_idx = self.cy as usize;
                 let current_line = if line_idx < buffer.len() {
                     let line = &mut buffer.lines[line_idx];
@@ -331,25 +318,15 @@ impl Editor {
                 self.cy = self.cy.saturating_add(1);
             }
             Action::DeleteChar => {
-                let buffer = &mut self.buffers[self.active_buffer];
-                let line_idx = self.cy as usize;
-
-                if line_idx < buffer.len() {
-                    if self.cx > 0 {
-                        if let Some(line) = buffer.lines.get_mut(line_idx) {
-                            if self.cx as usize <= line.len() {
-                                line.remove(self.cx as usize - 1);
-                                self.cx = self.cx.saturating_sub(1);
-                            }
-                        }
-                    } else if line_idx > 0 {
-                        let current_line = buffer.lines.remove(line_idx);
-                        let prev_line = &mut buffer.lines[line_idx - 1];
-                        self.cx = prev_line.len() as u16;
-                        prev_line.push_str(&current_line);
-                        self.cy = self.cy.saturating_sub(1);
-                    }
-                }
+                buffer.remove_char(self.cx as usize, self.cy as usize);
+                self.cx = self.cx.saturating_sub(1);
+            }
+            Action::EnterMode(mode) => self.mode = mode,
+            Action::NextBuffer => {
+                self.active_buffer = (self.active_buffer + 1) % self.buffers.len();
+            }
+            Action::PreviousBuffer => {
+                self.active_buffer = self.buffers.len().saturating_sub(1);
             }
         }
 
