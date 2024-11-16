@@ -1,0 +1,11 @@
+[package]
+name = "ziv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.93"
+clap = { version = "4.5.21", features = ["derive"] }
+crossterm = "0.28.1"
+ropey = "1.6.1"
+syntect = "5.2.0"
