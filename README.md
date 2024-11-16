@@ -6,8 +6,6 @@ ziv is a research/passion project to create a modal text editor in Rust from scr
 
 ## Quickstart
 
-This is a preliminary version of the final readme, but this section should get you up and running.
-
 Clone the git repo
 
 ```shell
